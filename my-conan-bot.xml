@@ -8,10 +8,10 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/ZBrisson/conan-bot</Support>
   <Project>https://github.com/ZBrisson/conan-bot</Project>
-  <Overview>Discord status/players/restart and event feed for ConanExiles_jons. Daily 05:00 restart with in-game warnings and DB snapshots. Can only control ConanExiles_jons.</Overview>
+  <Overview>Discord status, player list and role-gated restarts for a Conan Exiles dedicated server, plus a scheduled restart with in-game warnings, database snapshots and an event feed. Controls only the one container named in TARGET_CONTAINER.</Overview>
   <Category>GameServers: Tools:</Category>
   <Config Name="Config (.env with secrets)" Target="/config" Default="/mnt/user/appdata/conan-bot" Mode="ro" Description="Holds .env (chmod 600, owner 99:100)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/conan-bot</Config>
-  <Config Name="Conan server files" Target="/conan" Default="/mnt/cache/appdata/conanexiles_jons" Mode="ro" Description="Read-only: log tailing and DB snapshots" Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/conanexiles_jons</Config>
-  <Config Name="DB snapshots" Target="/backups" Default="/mnt/user/backup/conan/snapshots" Mode="rw" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/backup/conan/snapshots</Config>
+  <Config Name="Conan server files" Target="/conan" Default="" Mode="ro" Description="Read-only: the Conan server directory (contains ConanSandbox/)" Type="Path" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="DB snapshots" Target="/backups" Default="/mnt/user/appdata/conan-bot/snapshots" Mode="rw" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/conan-bot/snapshots</Config>
   <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
 </Container>

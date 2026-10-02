@@ -1,4 +1,4 @@
-"""conan-bot: Discord control and event feed for the ConanExiles_jons server on Unraid.
+"""conan-bot: Discord control and event feed for a Conan Exiles dedicated server on Unraid.
 
 - /conan status | players | restart  (restart is limited to ADMIN_ROLE)
 - Daily restart at RESTART_TIME (America/New_York) with in-game RCON warnings
@@ -7,7 +7,7 @@
 
 Restart rights come from a narrowly scoped Unraid API key (CONTROL_MODE=api), or
 from a docker-socket-proxy that only allows start/stop (CONTROL_MODE=proxy).
-Only TARGET_CONTAINER can ever be started or stopped.
+Only the single container named in TARGET_CONTAINER can ever be started or stopped.
 """
 import asyncio
 import datetime as dt
@@ -38,24 +38,29 @@ def load_env(path=os.environ.get("ENV_FILE", "/config/.env")):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            v = v.strip()
+            if v[:1] in ('"', "'"):
+                v = v[1:v.find(v[0], 1)] if v.find(v[0], 1) > 0 else v[1:]
+            else:
+                v = "" if v.startswith("#") else re.split(r"\s+#", v, maxsplit=1)[0].strip()
+            os.environ.setdefault(k.strip(), v)
 
 
 load_env()
 E = os.environ.get
 
 DISCORD_TOKEN = E("DISCORD_TOKEN")
-GUILD_ID = int(E("GUILD_ID", "0"))
-CHANNEL_ID = int(E("CHANNEL_ID", "0"))
+GUILD_ID = int(E("GUILD_ID") or 0)
+CHANNEL_ID = int(E("CHANNEL_ID") or 0)
 ADMIN_ROLE = E("ADMIN_ROLE", "Conan Admin")
 
-TARGET_CONTAINER = "ConanExiles_jons"  # hard-coded allowlist: never anything else
+TARGET_CONTAINER = E("TARGET_CONTAINER", "")  # the one container the bot may control
 CONTROL_MODE = E("CONTROL_MODE", "api")  # api | proxy
-UNRAID_URL = E("UNRAID_URL", "https://192.168.10.10/graphql")
+UNRAID_URL = E("UNRAID_URL", "")  # e.g. https://<unraid-host>/graphql
 UNRAID_API_KEY = E("UNRAID_API_KEY", "")
 PROXY_URL = E("PROXY_URL", "http://docker-socket-proxy:2375")
 
-SERVER_HOST = E("SERVER_HOST", "192.168.10.10")
+SERVER_HOST = E("SERVER_HOST", "")  # host/IP where the game server's query and RCON ports listen
 QUERY_PORT = int(E("QUERY_PORT", "27015"))
 RCON_PORT = int(E("RCON_PORT", "25575"))
 RCON_PASSWORD = E("RCON_PASSWORD", "")
@@ -401,9 +406,10 @@ async def on_ready():
 
 
 if __name__ == "__main__":
-    missing = [k for k in ("DISCORD_TOKEN", "GUILD_ID", "CHANNEL_ID", "RCON_PASSWORD") if not E(k)]
-    if CONTROL_MODE == "api" and not UNRAID_API_KEY:
-        missing.append("UNRAID_API_KEY")
+    missing = [k for k in ("DISCORD_TOKEN", "GUILD_ID", "CHANNEL_ID", "RCON_PASSWORD",
+                           "TARGET_CONTAINER", "SERVER_HOST") if not E(k)]
+    if CONTROL_MODE == "api":
+        missing += [k for k in ("UNRAID_URL", "UNRAID_API_KEY") if not E(k)]
     if missing:
         raise SystemExit(f"missing settings: {', '.join(missing)}")
     client.run(DISCORD_TOKEN, log_handler=None)

@@ -1,124 +1,131 @@
-# conan-bot + ConanExiles_jons runbook
+# conan-bot
 
-Run everything below as **root on the Unraid server** (Unraid 7.3.2). Each step: back up → look → change → verify.
+A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker on **Unraid**. Trusted members can check on the server and restart it from Discord. The bot also runs a daily restart with in-game warnings and posts what happens on the server to a channel.
 
-> **Never start `ConanExiles` (the legacy container).** Its first start runs steamcmd and upgrades the pre-engine-upgrade world you want to merge later. It also shares the same ports.
+## Features
 
-## Part A: server fixes
+- **Slash commands**
+  - `/conan status`: container state, query-port health, player count, latest server tick rate, game build
+  - `/conan players`: who is online (character names only)
+  - `/conan restart`: restart with a 1-minute in-game warning. Limited to one Discord role, and needs a confirm button.
+- **Scheduled restart** (default 05:00 daily):
+  1. Broadcasts in-game warnings over RCON (default 15, 5 and 1 minutes before).
+  2. Stops the server and snapshots `game_0.db` (keeps the newest N).
+  3. Starts the server and waits until the Steam query port answers. If the server image updates on start (e.g. steamcmd-based images), each restart also picks up game and mod updates.
+  4. Posts the result. On failure it includes a log excerpt with IPs and IDs masked.
+- **Event feed** to one channel:
+  - server up/down, and unexpected stops
+  - player joined/left (names only, never IPs or Steam IDs)
+  - mod-mismatch login rejections (e.g. `ServerHasNoMods`)
+  - low tick-rate alerts (minimum server FPS below a threshold for 3 reports in a row while players are on)
+- **Least privilege**
+  - It can start/stop exactly one container (`TARGET_CONTAINER`).
+  - It never needs the Docker socket.
+  - It runs as `99:100` (Unraid's `nobody:users`) and mounts the game files read-only.
 
-### A1. Archive the legacy world (read-only on the source)
+## Requirements
+
+- An Unraid server (7.2 or newer for the built-in API) running a Conan Exiles dedicated server container.
+- RCON enabled on the game server and reachable from the bot (LAN only; don't forward it to the internet). In `ConanSandbox/Saved/Config/<Platform>Server/Game.ini`:
+  ```ini
+  [RconPlugin]
+  RconEnabled=1
+  RconPassword=<strong password>
+  RconPort=25575
+  ```
+  The RCON port must also be published by the game server container.
+- One of these for container control:
+  - **`CONTROL_MODE=api`** (recommended): an Unraid API key that can read and update Docker containers and nothing else.
+    ```bash
+    unraid-api apikey --create --name conan-bot --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY"
+    ```
+    The flag syntax can differ between Unraid versions; check `unraid-api apikey --help`.
+  - **`CONTROL_MODE=proxy`**: a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) that only allows container inspect/start/stop (`CONTAINERS=1 POST=1 ALLOW_START=1 ALLOW_STOP=1`, everything else off).
+
+## Discord setup
+
+1. [Developer Portal](https://discord.com/developers/applications) → **New Application**.
+2. To keep the bot private: **Installation** → Install Link **None**, then **Bot** → turn off **Public Bot**.
+3. **Bot** → **Reset Token** → copy it into your `.env`. No privileged intents are needed.
+4. **OAuth2 → URL Generator**:
+   - Scopes: `bot`, `applications.commands`.
+   - Bot permissions: **View Channels**, **Send Messages**, **Embed Links**.
+   - Open the generated URL and add the bot to your server.
+5. Turn on Developer Mode (User Settings → Advanced). Right-click your server → **Copy Server ID** (`GUILD_ID`), and right-click the feed channel → **Copy Channel ID** (`CHANNEL_ID`).
+6. Create the role named in `ADMIN_ROLE` (default `Conan Admin`) for people allowed to restart.
+
+## Installation (Unraid)
+
+1. Create a config directory and settings file:
+   ```bash
+   mkdir -p /mnt/user/appdata/conan-bot/snapshots
+   curl -fsSLo /mnt/user/appdata/conan-bot/.env \
+     https://raw.githubusercontent.com/ZBrisson/conan-bot/main/.env.example
+   nano /mnt/user/appdata/conan-bot/.env
+   chown -R 99:100 /mnt/user/appdata/conan-bot && chmod 600 /mnt/user/appdata/conan-bot/.env
+   ```
+2. Install the template and create the container:
+   ```bash
+   curl -fsSLo /boot/config/plugins/dockerMan/templates-user/my-conan-bot.xml \
+     https://raw.githubusercontent.com/ZBrisson/conan-bot/main/my-conan-bot.xml
+   ```
+   Then **Docker → Add Container → Template: conan-bot**. Set **Conan server files** to your game server's appdata directory (the one containing `ConanSandbox/`).
+
+   Or, without the template:
+   ```bash
+   docker run -d --name conan-bot --restart unless-stopped \
+     -v /mnt/user/appdata/conan-bot:/config:ro \
+     -v /mnt/user/appdata/<your-conan-appdata>:/conan:ro \
+     -v /mnt/user/appdata/conan-bot/snapshots:/backups \
+     ghcr.io/zbrisson/conan-bot:latest
+   ```
+3. Check `docker logs conan-bot` for `ready as <bot>; daily restart at 05:00`. The slash commands appear in your server within a minute.
+
+## Configuration
+
+Settings come from environment variables or `/config/.env`. See [`.env.example`](.env.example).
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `DISCORD_TOKEN` | yes | | Bot token |
+| `GUILD_ID` / `CHANNEL_ID` | yes | | Server for slash commands; channel for the event feed |
+| `ADMIN_ROLE` | | `Conan Admin` | Role allowed to use `/conan restart` |
+| `TARGET_CONTAINER` | yes | | The only container the bot may start/stop |
+| `SERVER_HOST` | yes | | Host where the query and RCON ports listen |
+| `QUERY_PORT` / `RCON_PORT` | | `27015` / `25575` | |
+| `RCON_PASSWORD` | yes | | |
+| `CONTROL_MODE` | | `api` | `api` or `proxy` |
+| `UNRAID_URL` / `UNRAID_API_KEY` | api mode | | `https://<unraid-host>/graphql` and the scoped key |
+| `PROXY_URL` | proxy mode | `http://docker-socket-proxy:2375` | |
+| `TZ_NAME` / `RESTART_TIME` | | `America/New_York` / `05:00` | Daily restart time |
+| `WARN_MINUTES` | | `15,5,1` | In-game warnings before the scheduled restart |
+| `KEEP_SNAPSHOTS` | | `14` | Database snapshots kept in `/backups` |
+| `FPS_ALERT_MIN` | | `10` | Tick-rate alert threshold |
+| `LOG_FILE` / `DB_FILE` | | `/conan/ConanSandbox/Saved/...` | Override if your layout differs |
+
+### Volumes
+
+| Container path | Mode | Contents |
+|---|---|---|
+| `/config` | ro | `.env` |
+| `/conan` | ro | Game server directory (log tailing, DB snapshot source) |
+| `/backups` | rw | `game_0-<timestamp>.db` snapshots |
+
+## Security notes
+
+- Keep `.env` at `chmod 600`. It holds the bot token, RCON password and API key.
+- Don't forward the RCON port to the internet.
+- The bot never posts IP addresses or Steam IDs. Log excerpts are masked before posting.
+- Unraid's API uses a self-signed certificate on the LAN, so the bot doesn't verify TLS for `UNRAID_URL`. Keep that URL on a trusted network.
+
+## Development
+
 ```bash
-SRC=/mnt/cache/appdata/conanexiles/ConanSandbox/Saved/
-DST=/mnt/user/backup/conan/legacy-pre-ue-$(date +%F)/
-mkdir -p "$DST" && rsync -a "$SRC" "$DST"
-du -sh "$SRC" "$DST"                        # sizes should match
-docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' ConanExiles   # expect "no"
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill in, then:
+ENV_FILE=.env python bot.py
+
+docker build -t conan-bot .
 ```
-
-### A2. Mods: download both, then load them
-```bash
-T=/boot/config/plugins/dockerMan/templates-user/my-ConanExiles_jons.xml
-ls -la "$T" && cp "$T" "$T.bak-$(date +%F)"
-grep -nE 'WS_CONTENT|VALIDATE' "$T"                                   # look first
-sed -i 's#\(Target="VALIDATE"[^>]*>\)[^<]*<#\1true<#' "$T"            # VALIDATE=true
-grep -n 'Target="VALIDATE"' "$T"
-ls /usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container \
-  && /usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container ConanExiles_jons
-# (no script → GUI: Docker → ConanExiles_jons → Edit → Apply)
-```
-Wait until both folders exist, then write `modlist.txt` with container paths:
-```bash
-J=/mnt/cache/appdata/conanexiles_jons
-ls -d $J/steamapps/workshop/content/440900/{3718655125,3719513784}/
-M=$J/ConanSandbox/Mods/modlist.txt; cp "$M" "$M.bak-$(date +%F)"
-for id in 3718655125 3719513784; do
-  find $J/steamapps/workshop/content/440900/$id -name '*.pak' | sed "s#^$J#/serverdata/serverfiles#"
-done > "$M"
-chown 99:100 "$M"; cat "$M"                                            # expect 2 lines
-sed -i 's#\(Target="VALIDATE"[^>]*>\)[^<]*<#\1<#' "$T"                 # VALIDATE back to empty
-/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container ConanExiles_jons
-```
-Verify (from your workstation, while `openssh-server` is running):
-`ssh unraid-ro 'grep -iE "Mounting|modlist|ServerHasNoMods" /appdata/conanexiles_jons/ConanSandbox/Saved/Logs/ConanSandbox.log | tail'`
-
-**Mod compatibility (checked 2026-10-02):** both mods are by Xevyr, tagged *Enhanced* and updated 2026-09-15 (the day Update 2.2.0 shipped). The author says they rarely need updates when the game patches. **Recheck after "Legacy of the Giant-Kings: Part Two" (Oct 6):**
-```bash
-curl -s -d 'itemcount=2&publishedfileids[0]=3718655125&publishedfileids[1]=3719513784' \
-  https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/ \
-  | python3 -c "import json,sys,datetime as d;[print(f['title'],d.datetime.fromtimestamp(f['time_updated']).date()) for f in json.load(sys.stdin)['response']['publishedfiledetails']]"
-```
-
-### A3. RCON on the LAN only
-```bash
-C=/mnt/cache/appdata/conanexiles_jons/ConanSandbox/Saved/Config/LinuxServer
-ls -la $C; test -f $C/Game.ini && cp $C/Game.ini $C/Game.ini.bak-$(date +%F)
-PW=$(openssl rand -hex 16); echo "RCON password (put in conan-bot .env): $PW"
-printf '[RconPlugin]\nRconEnabled=1\nRconPassword=%s\nRconPort=25575\nRconMaxKarma=60\n' "$PW" >> $C/Game.ini
-chown 99:100 $C/Game.ini; grep -v Password $C/Game.ini
-# publish 25575/tcp on the host (do NOT forward it on the router)
-grep -q 'Target="25575"' "$T" || sed -i 's#</Container>#  <Config Name="RCON" Target="25575" Default="25575" Mode="tcp" Description="LAN only" Type="Port" Display="always" Required="false" Mask="false">25575</Config>\n</Container>#' "$T"
-/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container ConanExiles_jons
-docker port ConanExiles_jons | grep 25575
-```
-
-### A4. Tidy restore leftovers (move, don't delete)
-```bash
-J=/mnt/cache/appdata/conanexiles_jons/ConanSandbox/Saved/Config
-mkdir -p /mnt/user/backup/conan/restore-leftovers
-mv $J/WindowsServer $J/LinuxServer.default-bak /mnt/user/backup/conan/restore-leftovers/
-ls /mnt/user/backup/conan/restore-leftovers/
-```
-
-### A5. Backups: make sure appdata.backup doesn't collide with 05:00
-```bash
-grep -iE 'cron|schedule|exclude|conan' /boot/config/plugins/appdata.backup/config.json
-```
-
-### A6. Security clean-up
-```bash
-unraid-api apikey --help          # list/delete the VIEWER key "read only key", create a new one
-```
-On your workstation: `chmod 600` any local files that hold Unraid API keys or passwords.
-
-## Part B: conan-bot
-
-### B1. Discord (has to be done in the browser)
-A channel **webhook URL is not enough**: slash commands and buttons need a bot. Collect four things: **bot token**, **application ID**, **server (guild) ID**, **channel ID**. The token goes only into `/mnt/user/appdata/conan-bot/.env`, never into chat or git.
-1. https://discord.com/developers/applications → New Application → Bot → copy the token. No privileged intents needed.
-2. OAuth2 URL Generator: scopes `bot` + `applications.commands`; permissions *Send Messages*, *Embed Links*. Invite it to your server.
-3. Create a role **Conan Admin** and give it to the people who may restart.
-4. Copy the server ID and the feed channel ID (Developer Mode → right-click → Copy ID).
-
-### B2. Scoped Unraid API key
-```bash
-unraid-api apikey --help                                   # confirm flags on 7.3.2
-unraid-api apikey --create --name conan-bot --description "restart ConanExiles_jons" \
-  --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY"
-```
-If the API refuses container start/stop with that key, use the fallback: a `tecnativa/docker-socket-proxy` container on port 2375 (LAN), env `CONTAINERS=1 POST=1 ALLOW_START=1 ALLOW_STOP=1`, everything else off, and set `CONTROL_MODE=proxy`. **Never mount the raw Docker socket into the bot.**
-
-### B3. Install (image `ghcr.io/zbrisson/conan-bot`, built by GitHub Actions)
-The container runs as `99:100` (nobody:users) and reads its secrets from `/config/.env`.
-```bash
-A=/mnt/user/appdata/conan-bot; mkdir -p $A /mnt/user/backup/conan/snapshots
-# from your workstation: scp .env.example my-conan-bot.xml root@192.168.10.10:/mnt/user/appdata/conan-bot/
-cp $A/.env.example $A/.env && nano $A/.env                           # fill in the secrets
-chown -R 99:100 $A /mnt/user/backup/conan/snapshots && chmod 600 $A/.env
-cp $A/my-conan-bot.xml /boot/config/plugins/dockerMan/templates-user/my-conan-bot.xml
-docker run -d --name conan-bot --restart unless-stopped -e TZ=America/New_York \
-  -v $A:/config:ro -v /mnt/cache/appdata/conanexiles_jons:/conan:ro \
-  -v /mnt/user/backup/conan/snapshots:/backups \
-  ghcr.io/zbrisson/conan-bot:latest
-docker logs -f conan-bot          # expect "ready as ... daily restart at 05:00"
-```
-If the GHCR package is private, either make it public (Package settings → visibility) or run `docker login ghcr.io` on Unraid with a read-only `read:packages` token. The template in `templates-user/` has the same name, so Unraid manages it like any other container and its update check works. Add `conan-bot` to the Games autostart sequence after `ConanExiles_jons` (FolderView `autostart.json`).
-
-## Verification
-| Check | How |
-|---|---|
-| Status | `/conan status` shows RUNNING, players, tick rate, build |
-| RCON | `/conan players` works; 25575 closed from outside (phone hotspot: `nc -vz <your-public-ip> 25575`) |
-| Restart | `/conan restart` with nobody on → ✅ post, new snapshot in `snapshots/`, new `Build:` line in the log |
-| Allowlist | `TARGET_CONTAINER` is hard-coded; the bot has no code path for any other container |
-| Schedule | set `RESTART_TIME` 2 min ahead, `docker restart conan-bot`, watch one run, set back to `05:00` |
-| Events | join and leave once → ➕/➖ posts; `docker kill ConanExiles_jons` → ⚠️ unexpected-stop post |
+Pushes to `main` build and publish `ghcr.io/zbrisson/conan-bot` (`latest` and the short commit SHA). Tags `v*` add semver tags.
