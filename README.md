@@ -128,6 +128,7 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in, then:
 ENV_FILE=.env python bot.py
 
+python -m pytest -q tests/
 docker build -t conan-bot .
 ```
 Pushes to `main` build and publish `ghcr.io/zbrisson/conan-bot` (`latest` and the short commit SHA). Tags `v*` add semver tags.

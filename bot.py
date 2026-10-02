@@ -168,10 +168,13 @@ def player_names(listplayers_output):
     return names
 
 
+BUILD_SCAN_LINES = 3000  # the start-up header; Enhanced prints the build line around line 430
+
+
 def log_build():
     try:
         with LOG_FILE.open(errors="replace") as f:
-            for _, line in zip(range(400), f):
+            for _, line in zip(range(BUILD_SCAN_LINES), f):
                 m = re.search(r"LogInit: Build: (\S+)", line)
                 if m:
                     return m.group(1)
