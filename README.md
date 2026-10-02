@@ -26,7 +26,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
 ## Requirements
 
 - An Unraid server (7.2 or newer for the built-in API) running a Conan Exiles dedicated server container.
-- RCON enabled on the game server and reachable from the bot (LAN only; don't forward it to the internet). In `ConanSandbox/Saved/Config/<Platform>Server/Game.ini`:
+- RCON enabled on the game server and reachable from the bot (LAN only; don't forward it to the internet). In `ConanSandbox/Saved/Config/<Platform>Server/Game.ini` (edit it only while the server is stopped; the server rewrites its config on shutdown and drops unknown changes):
   ```ini
   [RconPlugin]
   RconEnabled=1
@@ -37,9 +37,9 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
 - One of these for container control:
   - **`CONTROL_MODE=api`** (recommended): an Unraid API key that can read and update Docker containers and nothing else.
     ```bash
-    unraid-api apikey --create --name conan-bot --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY"
+    unraid-api apikey --create --name "conan bot" --roles "" --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY"
     ```
-    The flag syntax can differ between Unraid versions; check `unraid-api apikey --help`.
+    Key names allow only letters, numbers and spaces. `--roles ""` is required when using `--permissions` alone (otherwise: "Invalid data structure").
   - **`CONTROL_MODE=proxy`**: a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) that only allows container inspect/start/stop (`CONTAINERS=1 POST=1 ALLOW_START=1 ALLOW_STOP=1`, everything else off).
 
 ## Discord setup
