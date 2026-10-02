@@ -1,7 +1,7 @@
 """conan-bot: Discord control and event feed for a Conan Exiles dedicated server on Unraid.
 
 - /conan status | players | restart  (restart is limited to ADMIN_ROLE)
-- Daily restart at RESTART_TIME (America/New_York) with in-game RCON warnings
+- Daily restart: the server goes down at RESTART_TIME, after in-game RCON warnings
 - Event feed: server up/down, unexpected exits, joins/leaves (names only),
   mod-mismatch login failures, low tick-rate alerts
 
@@ -72,7 +72,17 @@ KEEP_SNAPSHOTS = int(E("KEEP_SNAPSHOTS", "14"))
 
 TZ = ZoneInfo(E("TZ_NAME", "America/New_York"))
 RESTART_TIME = dt.time(*map(int, E("RESTART_TIME", "05:00").split(":")), tzinfo=TZ)
-WARN_MINUTES = [int(x) for x in E("WARN_MINUTES", "15,5,1").split(",")]
+WARN_MINUTES = [int(x) for x in E("WARN_MINUTES", "15,5,1").split(",") if x.strip()]
+
+
+def warning_start(restart_at: dt.time, warn_minutes) -> dt.time:
+    """When the scheduled routine must begin so the server goes down at restart_at."""
+    lead = dt.timedelta(minutes=max(warn_minutes, default=0))
+    start = dt.datetime.combine(dt.date(2000, 1, 2), restart_at.replace(tzinfo=None)) - lead
+    return start.time().replace(tzinfo=restart_at.tzinfo)
+
+
+SCHEDULE_START = warning_start(RESTART_TIME, WARN_MINUTES)
 STOP_TIMEOUT = 120
 START_TIMEOUT = 600
 FPS_ALERT_MIN = float(E("FPS_ALERT_MIN", "10"))
@@ -336,7 +346,7 @@ async def restart_cmd(inter: discord.Interaction):
 tree.add_command(conan, guild=guild_obj)
 
 
-@tasks.loop(time=RESTART_TIME)
+@tasks.loop(time=SCHEDULE_START)
 async def daily_restart():
     await restart_routine("daily schedule", WARN_MINUTES)
 
@@ -406,7 +416,8 @@ async def on_ready():
         daily_restart.start()
         watch_state.start()
         client.loop.create_task(follow_log())
-        log.info("ready as %s; daily restart at %s", client.user, RESTART_TIME)
+        log.info("ready as %s; daily restart at %s (warnings from %s)", client.user,
+                 RESTART_TIME.strftime("%H:%M"), SCHEDULE_START.strftime("%H:%M"))
 
 
 if __name__ == "__main__":

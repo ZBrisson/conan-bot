@@ -10,7 +10,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
   - `/conan status`: container state, query-port health, player count, latest server tick rate, game build
   - `/conan players`: who is online (character names only)
   - `/conan restart`: restart with a 1-minute in-game warning. Limited to one Discord role, and needs a confirm button.
-- **Scheduled restart** (default 05:00 daily):
+- **Scheduled restart** (default 05:00 daily; the server goes down at that time and the warnings start earlier):
   1. Broadcasts in-game warnings over RCON (default 15, 5 and 1 minutes before).
   2. Stops the server and snapshots `game_0.db` (keeps the newest N).
   3. Starts the server and waits until the Steam query port answers. If the server image updates on start (e.g. steamcmd-based images), each restart also picks up game and mod updates.
@@ -81,7 +81,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
      -v /mnt/user/appdata/conan-bot/snapshots:/backups \
      ghcr.io/zbrisson/conan-bot:latest
    ```
-3. Check `docker logs conan-bot` for `ready as <bot>; daily restart at 05:00`. The slash commands appear in your server within a minute.
+3. Check `docker logs conan-bot` for `ready as <bot>; daily restart at 05:00 (warnings from 04:45)`. The slash commands appear in your server within a minute.
 
 ## Configuration
 
@@ -99,7 +99,7 @@ Settings come from environment variables or `/config/.env`. See [`.env.example`]
 | `CONTROL_MODE` | | `api` | `api` or `proxy` |
 | `UNRAID_URL` / `UNRAID_API_KEY` | api mode | | `https://<unraid-host>/graphql` and the scoped key |
 | `PROXY_URL` | proxy mode | `http://docker-socket-proxy:2375` | |
-| `TZ_NAME` / `RESTART_TIME` | | `America/New_York` / `05:00` | Daily restart time |
+| `TZ_NAME` / `RESTART_TIME` | | `America/New_York` / `05:00` | When the server goes down; warnings begin `max(WARN_MINUTES)` earlier |
 | `WARN_MINUTES` | | `15,5,1` | In-game warnings before the scheduled restart |
 | `KEEP_SNAPSHOTS` | | `14` | Database snapshots kept in `/backups` |
 | `FPS_ALERT_MIN` | | `10` | Tick-rate alert threshold |

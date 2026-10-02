@@ -48,3 +48,10 @@ def test_masking(tmp_path):
 def test_player_names():
     out = "Idx | Char name | Player name | User ID | Platform ID | Platform Name\n  0 | Conan | Someone | x | y | Steam\n"
     assert bot.player_names(out) == ["Conan"]
+
+
+def test_schedule_starts_before_restart_time():
+    tz = bot.TZ
+    assert bot.warning_start(bot.dt.time(5, 0, tzinfo=tz), [15, 5, 1]) == bot.dt.time(4, 45, tzinfo=tz)
+    assert bot.warning_start(bot.dt.time(0, 5, tzinfo=tz), [15, 5, 1]) == bot.dt.time(23, 50, tzinfo=tz)
+    assert bot.warning_start(bot.dt.time(5, 0, tzinfo=tz), []) == bot.dt.time(5, 0, tzinfo=tz)
