@@ -6,6 +6,7 @@
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
+  <Icon>https://raw.githubusercontent.com/ZBrisson/conan-bot/main/icon.png</Icon>
   <Support>https://github.com/ZBrisson/conan-bot</Support>
   <Project>https://github.com/ZBrisson/conan-bot</Project>
   <Overview>Discord status, player list and role-gated restarts for a Conan Exiles dedicated server, plus a scheduled restart with in-game warnings, database snapshots and an event feed. Controls only the one container named in TARGET_CONTAINER.</Overview>

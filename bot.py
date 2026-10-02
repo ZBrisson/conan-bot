@@ -146,7 +146,8 @@ async def query_info():
 
 def rcon(cmd):
     with RconClient(SERVER_HOST, RCON_PORT, passwd=RCON_PASSWORD, timeout=10) as c:
-        return c.run(cmd)
+        # Conan's RCON doesn't echo the request packet ID, so don't enforce it.
+        return c.run(cmd, enforce_id=False)
 
 
 async def rcon_async(cmd):

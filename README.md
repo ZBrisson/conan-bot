@@ -1,3 +1,5 @@
+<img src="icon.png" width="96" align="right" alt="">
+
 # conan-bot
 
 A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker on **Unraid**. Trusted members can check on the server and restart it from Discord. The bot also runs a daily restart with in-game warnings and posts what happens on the server to a channel.
