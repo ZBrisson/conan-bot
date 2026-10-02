@@ -10,6 +10,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
   - `/conan status`: container state, query-port health, player count, latest server tick rate, game build
   - `/conan players`: who is online (character names only)
   - `/conan restart`: restart with a 1-minute in-game warning. Limited to one Discord role, and needs a confirm button.
+  - `/conan notify show | set | reset`: turn notification categories on or off from Discord. Anyone can view; changing needs the admin role.
 - **Scheduled restart** (default 05:00 daily; the server goes down at that time and the warnings start earlier):
   1. Broadcasts in-game warnings over RCON (default 15, 5 and 1 minutes before).
   2. Stops the server and snapshots `game_0.db` (keeps the newest N).
@@ -20,6 +21,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
   - player joined/left (names only, never IPs or Steam IDs)
   - mod-mismatch login rejections (e.g. `ServerHasNoMods`)
   - low tick-rate alerts (minimum server FPS below a threshold for 3 reports in a row while players are on)
+- **Notification settings**: each category can be on or off (see below).
 - **Least privilege**
   - It can start/stop exactly one container (`TARGET_CONTAINER`).
   - It never needs the Docker socket.
@@ -60,7 +62,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
 
 1. Create a config directory and settings file:
    ```bash
-   mkdir -p /mnt/user/appdata/conan-bot/snapshots
+   mkdir -p /mnt/user/appdata/conan-bot/snapshots /mnt/user/appdata/conan-bot/data
    curl -fsSLo /mnt/user/appdata/conan-bot/.env \
      https://raw.githubusercontent.com/ZBrisson/conan-bot/main/.env.example
    nano /mnt/user/appdata/conan-bot/.env
@@ -78,6 +80,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
    docker run -d --name conan-bot --restart unless-stopped \
      -v /mnt/user/appdata/conan-bot:/config:ro \
      -v /mnt/user/appdata/<your-conan-appdata>:/conan:ro \
+     -v /mnt/user/appdata/conan-bot/data:/data \
      -v /mnt/user/appdata/conan-bot/snapshots:/backups \
      ghcr.io/zbrisson/conan-bot:latest
    ```
@@ -103,6 +106,8 @@ Settings come from environment variables or `/config/.env`. See [`.env.example`]
 | `WARN_MINUTES` | | `15,5,1` | In-game warnings before the scheduled restart |
 | `KEEP_SNAPSHOTS` | | `14` | Database snapshots kept in `/backups` |
 | `FPS_ALERT_MIN` | | `10` | Tick-rate alert threshold |
+| `NOTIFY_PLAYERS` … `NOTIFY_MANUAL` | | `on` | Notification defaults (see [Notifications](#notifications)) |
+| `DATA_DIR` | | `/data` | Where Discord-made settings are saved |
 | `LOG_FILE` / `DB_FILE` | | `/conan/ConanSandbox/Saved/...` | Override if your layout differs |
 
 ### Volumes
@@ -111,7 +116,23 @@ Settings come from environment variables or `/config/.env`. See [`.env.example`]
 |---|---|---|
 | `/config` | ro | `.env` |
 | `/conan` | ro | Game server directory (log tailing, DB snapshot source) |
+| `/data` | rw | `notify.json` (settings changed from Discord) |
 | `/backups` | rw | `game_0-<timestamp>.db` snapshots |
+
+## Notifications
+
+| Category | Posts |
+|---|---|
+| `players` | ➕ joined / ➖ left |
+| `performance` | 🐢 low tick-rate alerts |
+| `mods` | 🧩 mod-mismatch login rejections |
+| `crashes` | ⚠️ unexpected stop / ▶️ running again |
+| `scheduled` | 🔄 / ✅ for the daily restart |
+| `manual` | 🔄 / ✅ for `/conan restart` |
+
+- **Defaults** come from `NOTIFY_<CATEGORY>=on|off` (all on if unset).
+- **`/conan notify set <category|all> <on|off>`** overrides a default and saves it to `/data/notify.json`, so it survives restarts. `/conan notify reset` goes back to the `.env` defaults.
+- **Always posted:** ❌ restart failures can't be muted, and every change made with `/conan notify` is announced in the channel.
 
 ## Security notes
 

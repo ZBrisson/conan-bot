@@ -55,3 +55,45 @@ def test_schedule_starts_before_restart_time():
     assert bot.warning_start(bot.dt.time(5, 0, tzinfo=tz), [15, 5, 1]) == bot.dt.time(4, 45, tzinfo=tz)
     assert bot.warning_start(bot.dt.time(0, 5, tzinfo=tz), [15, 5, 1]) == bot.dt.time(23, 50, tzinfo=tz)
     assert bot.warning_start(bot.dt.time(5, 0, tzinfo=tz), []) == bot.dt.time(5, 0, tzinfo=tz)
+
+
+def test_notify_defaults_save_reload_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOTIFY_PERFORMANCE", "off")
+    f = tmp_path / "data" / "notify.json"
+    n = bot.NotifySettings(f)
+    assert n.enabled("players") and not n.enabled("performance")
+    assert n.set("players", False) == ["players"]
+    assert bot.NotifySettings(f).enabled("players") is False      # persisted
+    n.set("all", True)
+    assert all(bot.NotifySettings(f).enabled(c) for c in bot.NOTIFY_CATEGORIES)
+    n.reset()
+    again = bot.NotifySettings(f)
+    assert again.enabled("players") and not again.enabled("performance")  # back to .env
+    import pytest
+    with pytest.raises(KeyError):
+        n.set("nope", True)
+
+
+def test_notify_unwritable_keeps_change_in_memory(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    n = bot.NotifySettings(blocker / "notify.json")   # parent is a file -> can't save
+    n.set("mods", False)
+    assert n.enabled("mods") is False and n.persistent is False
+
+
+def test_post_respects_mutes(tmp_path):
+    import asyncio
+    sent = []
+
+    class Ch:
+        async def send(self, m):
+            sent.append(m)
+
+    bot.notify = bot.NotifySettings(tmp_path / "n.json")
+    bot.client.get_channel = lambda _id: Ch()
+    bot.notify.set("players", False)
+    asyncio.run(bot.post("➕ x joined", "players"))
+    asyncio.run(bot.post("✅ up", "scheduled"))
+    asyncio.run(bot.post("❌ failed"))
+    assert sent == ["✅ up", "❌ failed"]

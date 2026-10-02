@@ -1,6 +1,7 @@
 """conan-bot: Discord control and event feed for a Conan Exiles dedicated server on Unraid.
 
 - /conan status | players | restart  (restart is limited to ADMIN_ROLE)
+- /conan notify show | set | reset  (turn Discord notification categories on/off)
 - Daily restart: the server goes down at RESTART_TIME, after in-game RCON warnings
 - Event feed: server up/down, unexpected exits, joins/leaves (names only),
   mod-mismatch login failures, low tick-rate alerts
@@ -11,6 +12,7 @@ Only the single container named in TARGET_CONTAINER can ever be started or stopp
 """
 import asyncio
 import datetime as dt
+import json
 import logging
 import os
 import re
@@ -68,6 +70,7 @@ RCON_PASSWORD = E("RCON_PASSWORD", "")
 LOG_FILE = Path(E("LOG_FILE", "/conan/ConanSandbox/Saved/Logs/ConanSandbox.log"))
 DB_FILE = Path(E("DB_FILE", "/conan/ConanSandbox/Saved/game_0.db"))
 BACKUP_DIR = Path(E("BACKUP_DIR", "/backups"))
+DATA_DIR = Path(E("DATA_DIR", "/data"))  # writable; holds settings changed from Discord
 KEEP_SNAPSHOTS = int(E("KEEP_SNAPSHOTS", "14"))
 
 TZ = ZoneInfo(E("TZ_NAME", "America/New_York"))
@@ -87,6 +90,74 @@ STOP_TIMEOUT = 120
 START_TIMEOUT = 600
 FPS_ALERT_MIN = float(E("FPS_ALERT_MIN", "10"))
 
+NOTIFY_CATEGORIES = {
+    "players": "Player joined / left",
+    "performance": "Low tick-rate alerts",
+    "mods": "Mod-mismatch login rejections",
+    "crashes": "Unexpected stops and recoveries",
+    "scheduled": "Daily restart start / finish",
+    "manual": "Restarts requested with /conan restart",
+}
+
+
+def env_on(value, default=True):
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() in ("1", "on", "true", "yes", "enabled")
+
+
+class NotifySettings:
+    """Defaults from NOTIFY_<CATEGORY> env vars; Discord changes saved as overrides."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.defaults = {c: env_on(E(f"NOTIFY_{c.upper()}")) for c in NOTIFY_CATEGORIES}
+        self.overrides = {}
+        self.persistent = True
+        try:
+            data = json.loads(path.read_text())
+            self.overrides = {k: bool(v) for k, v in data.items() if k in NOTIFY_CATEGORIES}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            log.warning("ignoring unreadable %s: %s", path, e)
+
+    def enabled(self, category):
+        return self.overrides.get(category, self.defaults[category])
+
+    def _save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.overrides, indent=2, sort_keys=True))
+            tmp.replace(self.path)
+            self.persistent = True
+        except OSError as e:
+            self.persistent = False
+            log.warning("could not save %s (%s); change kept until restart", self.path, e)
+
+    def set(self, category, on):
+        cats = list(NOTIFY_CATEGORIES) if category == "all" else [category]
+        for c in cats:
+            if c not in NOTIFY_CATEGORIES:
+                raise KeyError(c)
+            self.overrides[c] = bool(on)
+        self._save()
+        return cats
+
+    def reset(self):
+        self.overrides = {}
+        self._save()
+
+    def table(self):
+        rows = []
+        for c, desc in NOTIFY_CATEGORIES.items():
+            src = "Discord" if c in self.overrides else ".env"
+            rows.append(f"{'🔔' if self.enabled(c) else '🔕'} `{c}` — {desc} *({src})*")
+        return "\n".join(rows)
+
+
+notify = NotifySettings(DATA_DIR / "notify.json")
 restart_lock = asyncio.Lock()
 expected_down = False  # set while the bot itself has the server stopped
 
@@ -239,19 +310,24 @@ guild_obj = discord.Object(id=GUILD_ID)
 control: Control | None = None
 
 
-async def post(msg):
+async def post(msg, category=None):
+    """Post to the feed channel. Messages with a category obey /conan notify; others always post."""
+    if category and not notify.enabled(category):
+        log.info("notification muted (%s): %s", category, msg.splitlines()[0][:120])
+        return
     ch = client.get_channel(CHANNEL_ID) or await client.fetch_channel(CHANNEL_ID)
     await ch.send(msg[:1990])
 
 
-async def restart_routine(reason, warn_minutes):
+async def restart_routine(reason, warn_minutes, kind):
+    """kind is the notification category: "scheduled" or "manual". Failures always post."""
     """Warn → stop → snapshot → start → wait for query port. One at a time."""
     global expected_down
     if restart_lock.locked():
         return "A restart is already running."
     async with restart_lock:
         t0 = dt.datetime.now(TZ)
-        await post(f"🔄 Restart starting ({reason}). Warnings: {', '.join(map(str, warn_minutes)) + ' min' if warn_minutes else 'none'}.")
+        await post(f"🔄 Restart starting ({reason}). Warnings: {', '.join(map(str, warn_minutes)) + ' min' if warn_minutes else 'none'}.", kind)
         schedule = sorted(warn_minutes, reverse=True)
         for i, m in enumerate(schedule):
             await rcon_async(f"broadcast Server restart in {m} minute{'s' if m != 1 else ''}.")
@@ -276,7 +352,7 @@ async def restart_routine(reason, warn_minutes):
             expected_down = False
         mins = (dt.datetime.now(TZ) - t0).total_seconds() / 60
         if info:
-            await post(f"✅ Server back up in {mins:.1f} min. Build `{log_build()}`. Snapshot `{snap.name}`.")
+            await post(f"✅ Server back up in {mins:.1f} min. Build `{log_build()}`. Snapshot `{snap.name}`.", kind)
             return "Restarted."
         await post(f"❌ Server started but not answering on {QUERY_PORT} after {START_TIMEOUT // 60} min.\n"
                    f"```\n{masked_tail()}\n```")
@@ -328,7 +404,7 @@ class ConfirmRestart(discord.ui.View):
             await inter.response.send_message("Only the requester can confirm.", ephemeral=True)
             return
         await inter.response.edit_message(content="Restart confirmed.", view=None)
-        await restart_routine(f"requested by {inter.user.display_name}", [1])
+        await restart_routine(f"requested by {inter.user.display_name}", [1], "manual")
 
 
 @conan.command(name="restart", description="Restart the server (Conan Admin only)")
@@ -343,12 +419,49 @@ async def restart_cmd(inter: discord.Interaction):
                                       view=ConfirmRestart(inter.user.id), ephemeral=True)
 
 
+notify_group = app_commands.Group(name="notify", description="Discord notification settings", parent=conan)
+CATEGORY_CHOICES = [app_commands.Choice(name=f"{c} — {d}"[:100], value=c) for c, d in NOTIFY_CATEGORIES.items()]
+CATEGORY_CHOICES.append(app_commands.Choice(name="all — every category", value="all"))
+
+
+def notify_footer():
+    return "" if notify.persistent else "\n⚠️ Settings can't be saved (is `/data` writable?); changes last until the bot restarts."
+
+
+@notify_group.command(name="show", description="Show which notifications are on")
+async def notify_show(inter: discord.Interaction):
+    await inter.response.send_message(notify.table() + notify_footer(), ephemeral=True)
+
+
+@notify_group.command(name="set", description="Turn a notification category on or off (Conan Admin only)")
+@app_commands.describe(category="Which notifications", enabled="On or off")
+@app_commands.choices(category=CATEGORY_CHOICES)
+async def notify_set(inter: discord.Interaction, category: app_commands.Choice[str], enabled: bool):
+    if not is_admin(inter):
+        await inter.response.send_message(f"You need the **{ADMIN_ROLE}** role.", ephemeral=True)
+        return
+    cats = notify.set(category.value, enabled)
+    await inter.response.send_message(notify.table() + notify_footer(), ephemeral=True)
+    await post(f"{'🔔' if enabled else '🔕'} {inter.user.display_name} turned "
+               f"{'on' if enabled else 'off'} notifications: {', '.join(cats)}")
+
+
+@notify_group.command(name="reset", description="Go back to the .env defaults (Conan Admin only)")
+async def notify_reset(inter: discord.Interaction):
+    if not is_admin(inter):
+        await inter.response.send_message(f"You need the **{ADMIN_ROLE}** role.", ephemeral=True)
+        return
+    notify.reset()
+    await inter.response.send_message(notify.table() + notify_footer(), ephemeral=True)
+    await post(f"🔔 {inter.user.display_name} reset notifications to the defaults")
+
+
 tree.add_command(conan, guild=guild_obj)
 
 
 @tasks.loop(time=SCHEDULE_START)
 async def daily_restart():
-    await restart_routine("daily schedule", WARN_MINUTES)
+    await restart_routine("daily schedule", WARN_MINUTES, "scheduled")
 
 
 @tasks.loop(seconds=60)
@@ -361,9 +474,9 @@ async def watch_state():
         log.warning("state check failed: %s", e)
         return
     if st and st == "RUNNING" and state != "RUNNING" and not expected_down:
-        await post(f"⚠️ {TARGET_CONTAINER} stopped unexpectedly (state {state}).\n```\n{masked_tail()}\n```")
+        await post(f"⚠️ {TARGET_CONTAINER} stopped unexpectedly (state {state}).\n```\n{masked_tail()}\n```", "crashes")
     if st and st != "RUNNING" and state == "RUNNING" and not restart_lock.locked():
-        await post(f"▶️ {TARGET_CONTAINER} is running again.")
+        await post(f"▶️ {TARGET_CONTAINER} is running again.", "crashes")
     watch_state.last = state
 
 
@@ -393,17 +506,17 @@ async def follow_log():
             continue
         for line in chunk.splitlines():
             if m := JOIN.search(line):
-                await post(f"➕ {m.group(1)} joined")
+                await post(f"➕ {m.group(1)} joined", "players")
             elif (m := LEAVE.search(line)) and m.group(1) != "Unknown":
-                await post(f"➖ {m.group(1)} left")
+                await post(f"➖ {m.group(1)} left", "players")
             elif m := MODFAIL.search(line):
-                await post(f"🧩 A player was refused at login: `{m.group(1)}` (mod mismatch).")
+                await post(f"🧩 A player was refused at login: `{m.group(1)}` (mod mismatch).", "mods")
             elif m := STATS.search(line):
                 players, fps_min = int(m.group(1)), float(m.group(2))
                 low = low + 1 if players > 0 and fps_min < FPS_ALERT_MIN else 0
                 if low == 3:
                     await post(f"🐢 Tick rate min under {FPS_ALERT_MIN:g} for 3 reports in a row "
-                               f"({players} player(s) on, latest min {fps_min}).")
+                               f"({players} player(s) on, latest min {fps_min}).", "performance")
         await asyncio.sleep(5)
 
 
