@@ -24,7 +24,7 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
 - **Notification settings**: each category can be on or off (see below).
 - **Least privilege**
   - It can start/stop exactly one container (`TARGET_CONTAINER`).
-  - It never needs the Docker socket.
+  - The bot itself never mounts the Docker socket (in `proxy` mode only the proxy does).
   - It runs as `99:100` (Unraid's `nobody:users`) and mounts the game files read-only.
 
 ## Requirements
@@ -39,12 +39,23 @@ A Discord bot for running a **Conan Exiles Enhanced** dedicated server in Docker
   ```
   The RCON port must also be published by the game server container.
 - One of these for container control:
-  - **`CONTROL_MODE=api`** (recommended): an Unraid API key that can read and update Docker containers and nothing else.
+  - **`CONTROL_MODE=api`** (simplest): an Unraid API key that can read and update Docker containers and nothing else. It works for **every** container; see [Permissions and their limits](#permissions-and-their-limits).
     ```bash
     unraid-api apikey --create --name "conan bot" --roles "" --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY"
     ```
     Key names allow only letters, numbers and spaces. `--roles ""` is required when using `--permissions` alone (otherwise: "Invalid data structure").
-  - **`CONTROL_MODE=proxy`**: a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) that only allows container inspect/start/stop (`CONTAINERS=1 POST=1 ALLOW_START=1 ALLOW_STOP=1`, everything else off).
+  - **`CONTROL_MODE=proxy`** (tightest): a Docker socket proxy in front of the Docker API. The bot only ever sends these three requests:
+    ```
+    GET  /containers/<TARGET_CONTAINER>/json
+    POST /containers/<TARGET_CONTAINER>/stop?t=120
+    POST /containers/<TARGET_CONTAINER>/start
+    ```
+    [wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy) can allow exactly those paths for one container name, using regex allowlists per HTTP method:
+    ```
+    SP_ALLOW_GET=^(/v1\.[0-9]+)?/containers/<TARGET_CONTAINER>/json$
+    SP_ALLOW_POST=^(/v1\.[0-9]+)?/containers/<TARGET_CONTAINER>/(start|stop)$
+    ```
+    Put the proxy and the bot on a private Docker network, don't publish the proxy's port, and restrict it to the bot (`SP_ALLOWFROM`). [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) also works (`CONTAINERS=1 POST=1 ALLOW_START=1 ALLOW_STOP=1`), but it filters by endpoint only, so it allows starting and stopping *any* container.
 
 ## Discord setup
 
@@ -134,12 +145,38 @@ Settings come from environment variables or `/config/.env`. See [`.env.example`]
 - **`/conan notify set <category|all> <on|off>`** overrides a default and saves it to `/data/notify.json`, so it survives restarts. `/conan notify reset` goes back to the `.env` defaults.
 - **Always posted:** ❌ restart failures can't be muted, and every change made with `/conan notify` is announced in the channel.
 
+## Permissions and their limits
+
+| Layer | What it limits | What it can't limit |
+|---|---|---|
+| `TARGET_CONTAINER` (the bot) | The bot's code only reads, starts and stops this one container, in both modes | Nothing outside the bot. Anyone holding the bot's API key or proxy access can use it directly |
+| Unraid API key (`api` mode) | Only the DOCKER resource, read + update; nothing else on the server (array, shares, VMs, settings) | **Which container.** Unraid API permissions are per resource, with no per-container scope, so `DOCKER:UPDATE_ANY` can start and stop every container |
+| wollomatic/socket-proxy (`proxy` mode) | Docker API requests by method and path regex, so one container name and only json/start/stop | The proxy itself mounts the Docker socket (root-equivalent), so keep it small, unpublished, and reachable only by the bot |
+| Tecnativa/docker-socket-proxy (`proxy` mode) | Endpoint groups (no exec, create, images, ...) | Container names: start/stop works on every container |
+| RCON password | Nothing; it's the game's full admin console | Keep RCON on the LAN and the password only in `.env` |
+
+Practical guidance:
+- **`api` mode** is the quickest to set up. Accept that the key can control any container, and protect `.env` accordingly.
+- **For a hard per-container limit**, use `proxy` mode with wollomatic/socket-proxy, then delete the Unraid API key.
+- Unraid quirks: key names allow only letters, numbers and spaces, and a permissions-only key needs `--roles ""`.
+
 ## Security notes
 
 - Keep `.env` at `chmod 600`. It holds the bot token, RCON password and API key.
 - Don't forward the RCON port to the internet.
 - The bot never posts IP addresses or Steam IDs. Log excerpts are masked before posting.
 - Unraid's API uses a self-signed certificate on the LAN, so the bot doesn't verify TLS for `UNRAID_URL`. Keep that URL on a trusted network.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `LogRcon: Display: Rcon disabled.` in the server log | `[RconPlugin]` must be in `Saved/Config/<Platform>Server/Game.ini`, written while the server was **stopped** (it rewrites its config on shutdown) |
+| `/conan players` says "RCON not reachable" | The RCON port must be published by the game container and reachable from the bot: `timeout 3 bash -c '</dev/tcp/<SERVER_HOST>/25575' && echo open` |
+| Did players get the in-game warnings? | Conan logs every RCON command to `ConanSandbox/Saved/Logs/RconCommandLog.log` (look for `broadcast Server restart in ...`) |
+| `/conan status` shows `Build: unknown` | The server log was rotated or is unreadable; check the `/conan` mount and `LOG_FILE` |
+| No posts for a category | `/conan notify show`; failures and setting changes always post |
+| `missing settings: ...` at startup | Fill those keys in `/config/.env` |
 
 ## Development
 
@@ -149,7 +186,7 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in, then:
 ENV_FILE=.env python bot.py
 
-python -m pytest -q tests/
+python -m pytest -q tests/       # offline: no Discord, RCON or Docker needed
 docker build -t conan-bot .
 ```
-Pushes to `main` build and publish `ghcr.io/zbrisson/conan-bot` (`latest` and the short commit SHA). Tags `v*` add semver tags.
+CI runs pyflakes and the tests on every push and pull request. Pushes to `main` build and publish `ghcr.io/zbrisson/conan-bot` (`latest` and the short commit SHA). Tags `v*` add semver tags.
